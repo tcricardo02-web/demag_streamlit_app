@@ -1,5 +1,6 @@
 streamlit
-plotly
-SQLAlchemy
 pandas
+numpy
+sqlalchemy
 pint
+plotly
