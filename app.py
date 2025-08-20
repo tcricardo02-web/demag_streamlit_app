@@ -2,77 +2,109 @@ import streamlit as st
 import logging
 from dataclasses import dataclass
 from typing import List, Dict, Optional
+import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px
 import pint
-from sqlalchemy import create_engine, Column, Integer, Float, ForeignKey
+from datetime import datetime
+
+from sqlalchemy import (
+    create_engine, Column, Integer, Float, ForeignKey, DateTime
+)
 from sqlalchemy.orm import sessionmaker, relationship, declarative_base
 
-# ------------------------------------------------------------------------------
-# Logger e Pint (unidades)
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------
+# Logger & Pint
+# ----------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
 
-# ------------------------------------------------------------------------------
-# Banco de dados (SQLAlchemy)
-# ------------------------------------------------------------------------------
-DB_PATH = "sqlite:///compressor.db"
+# ----------------------------------------------------------
+# Database setup
+# ----------------------------------------------------------
 Base = declarative_base()
-engine = create_engine(DB_PATH, echo=False, connect_args={"check_same_thread": False})
+engine = create_engine('sqlite:///compressor.db', connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)
 
+# Models
 class FrameModel(Base):
-    __tablename__ = "frame"
-    id = Column(Integer, primary_key=True, index=True)
+    __tablename__ = 'frame'
+    id = Column(Integer, primary_key=True)
     rpm = Column(Float)
     stroke_m = Column(Float)
     n_throws = Column(Integer)
-    throws = relationship("ThrowModel", back_populates="frame")
+    throws = relationship('ThrowModel', back_populates='frame')
 
 class ThrowModel(Base):
-    __tablename__ = "throw"
-    id = Column(Integer, primary_key=True, index=True)
-    frame_id = Column(Integer, ForeignKey("frame.id"))
+    __tablename__ = 'throw'
+    id = Column(Integer, primary_key=True)
+    frame_id = Column(Integer, ForeignKey('frame.id'))
     throw_number = Column(Integer)
+    stage_assignment = Column(Integer)
     bore_m = Column(Float)
     clearance_m = Column(Float)
     VVCP = Column(Float)
     SACE = Column(Float)
     SAHE = Column(Float)
-    frame = relationship("FrameModel", back_populates="throws")
+    frame = relationship('FrameModel', back_populates='throws')
 
 class ActuatorModel(Base):
-    __tablename__ = "actuator"
-    id = Column(Integer, primary_key=True, index=True)
+    __tablename__ = 'actuator'
+    id = Column(Integer, primary_key=True)
     power_available_kW = Column(Float)
     derate_percent = Column(Float)
     air_cooler_fraction = Column(Float)
 
-def init_db():
-    Base.metadata.create_all(bind=engine)
-    logger.info("Banco de dados inicializado.")
+class PerformanceRun(Base):
+    __tablename__ = 'performance_run'
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    mass_flow = Column(Float)
+    inlet_pressure = Column(Float)
+    inlet_temp = Column(Float)
+    outlet_pressure = Column(Float)
+    total_kW = Column(Float)
+    total_BHP = Column(Float)
+    n_stages = Column(Integer)
+    details = relationship('StageDetailModel', back_populates='run')
 
-# ------------------------------------------------------------------------------
-# Dataclasses (domínio)
-# ------------------------------------------------------------------------------
+class StageDetailModel(Base):
+    __tablename__ = 'stage_detail'
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey('performance_run.id'))
+    stage = Column(Integer)
+    P_in_bar = Column(Float)
+    P_out_bar = Column(Float)
+    isentropic_efficiency = Column(Float)
+    shaft_power_kW = Column(Float)
+    shaft_power_BHP = Column(Float)
+    run = relationship('PerformanceRun', back_populates='details')
+
+def init_db():
+    Base.metadata.create_all(engine)
+    logger.info('Database initialized')
+
+# ----------------------------------------------------------
+# Domain dataclasses
+# ----------------------------------------------------------
 @dataclass
 class Frame:
     rpm: float
-    stroke: float       # m
+    stroke: float
     n_throws: int
 
 @dataclass
 class Throw:
     throw_number: int
-    bore: float         # m
-    clearance: float    # m
-    VVCP: float         # %
-    SACE: float         # %
-    SAHE: float         # %
-    throw_id: Optional[int] = None
+    stage_assignment: int
+    bore: float
+    clearance: float
+    VVCP: float
+    SACE: float
+    SAHE: float
 
 @dataclass
 class Actuator:
@@ -82,306 +114,247 @@ class Actuator:
 
 @dataclass
 class Motor:
-    power_kW: float     # kW
+    power_kW: float
 
-# ------------------------------------------------------------------------------
-# Funções de cálculo
-# ------------------------------------------------------------------------------
-def clamp(n, a, b):
-    return max(a, min(n, b))
+# ----------------------------------------------------------
+# Calculation functions
+# ----------------------------------------------------------
+def clamp(x,a,b): return max(a, min(b, x))
+
+def estimate_n_stages(PR_total: float, max_pr_stage: float=4.16) -> int:
+    return int(np.ceil(np.log(PR_total) / np.log(max_pr_stage)))
 
 def perform_performance_calculation(
-    mass_flow: float,
-    inlet_pressure: Q_,
-    inlet_temperature: Q_,
-    n_stages: int,
-    PR_total: float,
-    throws: List[Throw],
-    stage_mapping: Dict[int, List[int]],
-    actuator: Actuator,
-) -> Dict:
+    mass_flow, P_in, T_in, P_out, throws: List[Throw], actuator: Actuator
+):
     m_dot = mass_flow
-    P_in = inlet_pressure.to(ureg.Pa).magnitude
-    T_in = inlet_temperature.to(ureg.K).magnitude
-    n = max(n_stages, 1)
-    PR_base = PR_total ** (1.0 / n)
-    gamma = 1.30
-    cp = 2.0  # kJ/(kg·K)
+    P1 = P_in.to(ureg.Pa).magnitude
+    P2 = P_out.to(ureg.Pa).magnitude
+    PR_total = P2 / P1
+    n_stages = estimate_n_stages(PR_total)
+    PR_base = PR_total ** (1/n_stages)
 
-    throws_by_number = {t.throw_number: t for t in throws}
+    gamma, cp = 1.30, 2.0
     total_W_kW = 0.0
-    stage_details = []
+    details = []
+    T = T_in.to(ureg.K).magnitude
 
-    for stage in range(1, n+1):
-        P_in_stage = P_in * (PR_base ** (stage-1))
-        P_out_stage = P_in_stage * PR_base
-        assigned = stage_mapping.get(stage, [])
+    for stage in range(1, n_stages+1):
+        Pin_s = P1 * (PR_base**(stage-1))
+        Pout_s = Pin_s * PR_base
+        assigned = [t for t in throws if t.stage_assignment == stage]
         if assigned:
-            SACE_avg = sum(throws_by_number[t].SACE for t in assigned if t in throws_by_number) / len(assigned)
-            VVCP_avg = sum(throws_by_number[t].VVCP for t in assigned if t in throws_by_number) / len(assigned)
-            SAHE_avg = sum(throws_by_number[t].SAHE for t in assigned if t in throws_by_number) / len(assigned)
+            SACE = np.mean([t.SACE for t in assigned])
+            VVCP = np.mean([t.VVCP for t in assigned])
+            SAHE = np.mean([t.SAHE for t in assigned])
         else:
-            SACE_avg = VVCP_avg = SAHE_avg = 0.0
+            SACE = VVCP = SAHE = 0.0
 
-        eta_isent = 0.65 + 0.15*(SACE_avg/100.0) - 0.05*(VVCP_avg/100.0) + 0.10*(SAHE_avg/100.0)
-        eta_isent = clamp(eta_isent, 0.65, 0.92)
+        eta = clamp(0.65 + 0.15*(SACE/100) - 0.05*(VVCP/100) + 0.10*(SAHE/100), 0.65, 0.92)
+        Tis = T * (PR_base**((gamma-1)/gamma))
+        Tout = T + (Tis - T)/eta
+        dT = Tout - T
+        Wk = m_dot * cp * dT / 1000
+        total_W_kW += Wk
 
-        T_out_isent = T_in * (PR_base ** ((gamma-1.0)/gamma))
-        T_out_actual = T_in + (T_out_isent - T_in) / max(eta_isent, 1e-6)
-        delta_T = T_out_actual - T_in
-
-        W_stage = m_dot * cp * delta_T / 1000.0
-        total_W_kW += W_stage
-
-        stage_details.append({
-            "stage": stage,
-            "P_in_bar": P_in_stage/1e5,
-            "P_out_bar": P_out_stage/1e5,
-            "PR": PR_base,
-            "T_in_C": T_in-273.15,
-            "T_out_C": T_out_actual-273.15,
-            "isentropic_efficiency": eta_isent,
-            "shaft_power_kW": W_stage,
-            "shaft_power_BHP": W_stage * 1.34102
+        details.append({
+            'stage': stage,
+            'P_in_bar': Pin_s/1e5,
+            'P_out_bar': Pout_s/1e5,
+            'isentropic_efficiency': eta,
+            'shaft_power_kW': Wk,
+            'shaft_power_BHP': Wk * 1.34102
         })
+        T = Tout
 
-        T_in = T_out_actual
-
-    outputs = {
-        "mass_flow_kg_s": m_dot,
-        "inlet_pressure_bar": P_in/1e5,
-        "inlet_temperature_C": inlet_temperature.to(ureg.degC).magnitude,
-        "n_stages": n_stages,
-        "total_shaft_power_kW": total_W_kW,
-        "total_shaft_power_BHP": total_W_kW * 1.34102,
-        "stage_details": stage_details,
-        "a_Ariel7_compatible": {
-            "stages": stage_details,
-            "total_shaft_power_kW": total_W_kW,
-            "total_shaft_power_BHP": total_W_kW * 1.34102
-        }
+    total_BHP = total_W_kW * 1.34102
+    return {
+        'mass_flow': m_dot,
+        'inlet_bar': P1/1e5,
+        'outlet_bar': P2/1e5,
+        'PR_total': PR_total,
+        'n_stages': n_stages,
+        'total_kW': total_W_kW,
+        'total_BHP': total_BHP,
+        'details': details
     }
-    return outputs
 
-# ------------------------------------------------------------------------------
-# Diagrama interativo (Plotly)
-# ------------------------------------------------------------------------------
-def generate_diagram(frame: Frame, throws: List[Throw], actuator: Actuator, motor: Motor) -> go.Figure:
-    """
-    Monta um diagrama representando:
-      - Motor (à esquerda), com potência em BHP;
-      - Frame do compressor (centro);
-      - Throws abaixo do frame;
-      - Atuador à direita.
-    """
+# ----------------------------------------------------------
+# Diagram function
+# ----------------------------------------------------------
+def generate_equipment_diagram(frame: Frame, throws: List[Throw], actuator: Actuator, motor: Motor):
     fig = go.Figure()
-    canvas_w, canvas_h = 900, 350
+    W, H = 900, 400
 
-    # Motor (esquerda)
-    mx, my, mw, mh = 30, canvas_h/2 - 25, 100, 50
-    fig.add_shape(
-        type="rect",
-        x0=mx, y0=my, x1=mx+mw, y1=my+mh,
-        line=dict(color="MediumPurple"),
-        fillcolor="Lavender"
-    )
-    fig.add_annotation(
-        x=mx+mw/2, y=my+mh/2,
-        text=f"Motor<br>{motor.power_kW * 1.34102:.0f} BHP",
-        showarrow=False, align="center"
-    )
+    # Motor
+    mx, my, mw, mh = 20, H/2-30, 120, 60
+    fig.add_shape(type='rect', x0=mx, y0=my, x1=mx+mw, y1=my+mh,
+                  line=dict(color='DarkSlateBlue'), fillcolor='MediumPurple')
+    fig.add_annotation(x=mx+mw/2, y=my+mh/2, showarrow=False, align='center',
+                       text=f"Motor\n{motor.power_kW*1.34102:.0f} BHP")
 
-    # Frame (centro)
-    fx, fy, fw, fh = mx + mw + 50, canvas_h/2 - 25, 200, 50
-    fig.add_shape(
-        type="rect",
-        x0=fx, y0=fy, x1=fx+fw, y1=fy+fh,
-        line=dict(color="RoyalBlue"),
-        fillcolor="LightSkyBlue"
-    )
-    fig.add_annotation(
-        x=fx+fw/2, y=fy+fh/2,
-        text=f"Frame<br>RPM: {frame.rpm:.0f}",
-        showarrow=False, align="center"
-    )
+    # Frame
+    fx, fy, fw, fh = mx+mw+60, H/2-25, 240, 50
+    fig.add_shape(type='rect', x0=fx, y0=fy, x1=fx+fw, y1=fy+fh,
+                  line=dict(color='RoyalBlue'), fillcolor='LightSkyBlue')
+    fig.add_annotation(x=fx+fw/2, y=fy+fh/2, showarrow=False, align='center',
+                       text=f"Frame\nRPM {frame.rpm:.0f}")
 
-    # Throws (abaixo do frame)
-    n = len(throws)
-    spacing = fw / n if n > 0 else 0
+    # Throws
+    spacing = fw / max(frame.n_throws, 1)
     for t in throws:
         idx = t.throw_number - 1
-        tx = fx + idx * spacing + spacing/4
+        tx = fx + idx*spacing + spacing*0.1
         ty = fy + fh + 20
-        tw, th = spacing/2, 30
-        fig.add_shape(
-            type="rect",
-            x0=tx, y0=ty, x1=tx+tw, y1=ty+th,
-            line=dict(color="DarkOrange"),
-            fillcolor="Moccasin"
-        )
-        fig.add_annotation(
-            x=tx+tw/2, y=ty+th/2,
-            text=f"Throw {t.throw_number}",
-            showarrow=False, font=dict(size=10)
-        )
+        fig.add_shape(type='rect', x0=tx, y0=ty, x1=tx+spacing*0.8, y1=ty+40,
+                      line=dict(color='DarkOrange'), fillcolor='Moccasin')
+        fig.add_annotation(x=tx+spacing*0.4, y=ty+20, showarrow=False, font=dict(size=10),
+                           text=f"Throw {t.throw_number}\nStg {t.stage_assignment}")
 
-    # Atuador (direita)
-    ax, ay, aw, ah = fx + fw + 50, canvas_h/2 - 20, 120, 60
-    fig.add_shape(
-        type="rect",
-        x0=ax, y0=ay, x1=ax+aw, y1=ay+ah,
-        line=dict(color="SaddleBrown"),
-        fillcolor="PeachPuff"
-    )
-    fig.add_annotation(
-        x=ax+aw/2, y=ay+ah/2,
-        text=f"Acionador<br>{actuator.power_kW:.0f} kW",
-        showarrow=False, align="center"
-    )
+    # Actuator
+    ax, ay, aw, ah = fx+fw+60, H/2-30, 120, 60
+    fig.add_shape(type='rect', x0=ax, y0=ay, x1=ax+aw, y1=ay+ah,
+                  line=dict(color='SaddleBrown'), fillcolor='PeachPuff')
+    fig.add_annotation(x=ax+aw/2, y=ay+ah/2, showarrow=False, align='center',
+                       text=f"Acionador\n{actuator.power_kW:.0f} kW")
 
-    fig.update_layout(
-        width=canvas_w,
-        height=canvas_h,
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-    )
+    fig.update_layout(width=W, height=H,
+                      xaxis=dict(visible=False),
+                      yaxis=dict(visible=False),
+                      margin=dict(l=10, r=10, t=10, b=10))
     return fig
 
-
-# ------------------------------------------------------------------------------
-# UI com Streamlit
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------
+# Streamlit UI
+# ----------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Compressor Ariel7-style", layout="wide")
-    st.title("Calculadora de Performance de Compressor (Estilo Ariel 7)")
-
+    st.set_page_config(page_title='Compressor Ariel7', layout='wide')
     init_db()
-    if "unit_system" not in st.session_state:
-        st.session_state["unit_system"] = "SI"
 
-    with st.sidebar:
-        st.header("Geral")
-        unit = st.selectbox("Sistema de unidades", ["SI", "Metric"], index=0)
-        st.session_state["unit_system"] = unit
-        if st.button("Resetar DB"):
-            import os
-            if os.path.exists("compressor.db"):
-                os.remove("compressor.db")
-            init_db()
-            st.success("Banco de dados reinicializado.")
+    if 'unit' not in st.session_state:
+        st.session_state['unit'] = 'SI'
+    st.sidebar.selectbox('Unidades', ['SI', 'Metric'], key='unit')
 
-    tabs = st.tabs(["Processo", "Configuração do Equipamento"])
+    tabs = st.tabs(['Processo', 'Equipamento', 'Report', 'Multi-Run'])
 
-    # Aba Processo
+    # Processo tab
     with tabs[0]:
-        st.header("Processo")
-        if st.session_state["unit_system"] == "SI":
-            p = st.number_input("Pressão incial (Pa)",  value=200000.0)
-            t = st.number_input("Temperatura (K)",    value=298.15)
+        st.header('Processo')
+        c1, c2 = st.columns(2)
+        if st.session_state.unit == 'SI':
+            pin = Q_(c1.number_input('P sucção (Pa)', 2e5), ureg.Pa)
+            tin = Q_(c1.number_input('T sucção (K)', 298.15), ureg.K)
         else:
-            p = st.number_input("Pressão (bar)",      value=2.0) * 1e5
-            t = st.number_input("Temp (°C)",          value=25.0) + 273.15
+            pin = Q_(c1.number_input('P sucção (bar)', 2.0)*1e5, ureg.Pa)
+            tin = Q_(c1.number_input('T sucção (°C)', 25.0)+273.15, ureg.K)
 
-        mf = st.number_input("Fluxo mássico (kg/s)", value=12.0)
-        ns = st.number_input("Nº de estágios",     min_value=1, value=3)
-        pr = st.number_input("PR total",           min_value=1.0, value=2.5)
+        pout = Q_(c2.number_input('P descarga (bar)', 4.0)*1e5, ureg.Pa)
+        mf = c2.number_input('Fluxo (kg/s)', 12.0)
+        PRtot = (pout/pin).magnitude
+        nest = estimate_n_stages(PRtot)
+        st.markdown(f'PR_total: {PRtot:.2f} (estágios: {nest})')
+        est = perform_performance_calculation(mf, pin, tin, pout, [], Actuator(0,0,0))
+        st.markdown(f"Estimativa kW: {est['total_kW']:.1f}, BHP: {est['total_BHP']:.1f}")
 
-        if st.button("Calcular (Processo)"):
-            out = perform_performance_calculation(
-                mass_flow=mf,
-                inlet_pressure=Q_(p, ureg.Pa),
-                inlet_temperature=Q_(t, ureg.K),
-                n_stages=ns,
-                PR_total=pr,
-                throws=[],
-                stage_mapping={},
-                actuator=Actuator(0,0,0)
-            )
-            st.json(out)
-
-    # Aba Configuração
+    # Equipamento tab
     with tabs[1]:
-        st.header("Configuração do Equipamento")
+        st.header('Configuração do Equipamento')
+        rpm = st.number_input('RPM Frame', 900)
+        stroke = st.number_input(
+            'Stroke (mm)' if st.session_state.unit=='Metric' else 'Stroke (m)',
+            120 if st.session_state.unit=='Metric' else 0.12
+        )
+        stroke_m = stroke * (0.001 if st.session_state.unit=='Metric' else 1)
+        n_thr = st.number_input('Número de Throws', 3, min_value=1)
+        frame = Frame(rpm, stroke_m, n_thr)
 
-        # Frame
-        rpm = st.number_input("RPM do Frame", min_value=100, max_value=3000, value=900, step=10)
-        if st.session_state["unit_system"] == "SI":
-            stroke = st.number_input("Stroke (m)", value=0.12, step=0.01)
-        else:
-            stroke = st.number_input("Stroke (mm)", value=120, step=1) / 1000.0
-        n_throws = st.number_input("Total de Throws", min_value=1, max_value=20, value=3)
-
-        frame = Frame(rpm=rpm, stroke=stroke, n_throws=int(n_throws))
-
-        # Throws
         throws: List[Throw] = []
-        for i in range(1, int(n_throws)+1):
-            st.markdown(f"**Throw {i}**")
-            if st.session_state["unit_system"] == "SI":
-                bore = st.number_input(f"Bore (m) #{i}", value=0.08, step=0.001, key=f"b{i}")
-                clr = st.number_input(f"Clearance (m) #{i}", value=0.002, step=0.0005, key=f"c{i}")
-            else:
-                bore = st.number_input(f"Bore (mm) #{i}", value=80, key=f"b{i}") / 1000.0
-                clr = st.number_input(f"Clearance (mm) #{i}", value=2, key=f"c{i}") / 1000.0
-            vvcp = st.number_input(f"VVCP (%) #{i}", value=90, key=f"v{i}")
-            sace = st.number_input(f"SACE (%) #{i}", value=80, key=f"s{i}")
-            sahe = st.number_input(f"SAHE (%) #{i}", value=60, key=f"h{i}")
-            throws.append(Throw(i, bore, clr, vvcp, sace, sahe))
+        for i in range(1, n_thr+1):
+            st.markdown(f'**Throw {i}**')
+            bore = st.number_input(f'Bore ({"mm" if st.session_state.unit=="Metric" else "m"})', 
+                                   80 if st.session_state.unit=='Metric' else 0.08, key=f'b{i}')
+            bore_m = bore * (0.001 if st.session_state.unit=='Metric' else 1)
+            clr = st.number_input(f'Clearance ({"mm" if st.session_state.unit=="Metric" else "m"})', 
+                                  2 if st.session_state.unit=='Metric' else 0.002, key=f'c{i}')
+            clr_m = clr * (0.001 if st.session_state.unit=='Metric' else 1)
+            stg = st.number_input(f'Estágio p/ Throw {i}', 1, min_value=1, key=f'st{i}')
+            vvcp = st.number_input(f'VVCP #{i}', 90, key=f'v{i}')
+            sace = st.number_input(f'SACE #{i}', 80, key=f's{i}')
+            sahe = st.number_input(f'SAHE #{i}', 60, key=f'h{i}')
+            throws.append(Throw(i, stg, bore_m, clr_m, vvcp, sace, sahe))
 
-        # Mapeamento multi-throw por estágio
-        ns = st.number_input("Nº de estágios (para mapear)", min_value=1, max_value=12, value=3)
-        stage_map: Dict[int, List[int]] = {}
-        for s in range(1, ns+1):
-            opts = [f"Throw {t.throw_number}" for t in throws]
-            sel = st.multiselect(f"Estágio {s} recebe:", opts, key=f"m{s}")
-            ids = [int(x.split()[1]) for x in sel]
-            stage_map[s] = ids
+        pw = st.number_input('Potência Atuador (kW)', 250.0)
+        dr = st.number_input('Derate (%)', 5.0)
+        ac = st.number_input('Air Cooler (%)', 25.0)
+        actuator = Actuator(pw, dr, ac)
 
-        # Atuador e Motor
-        pw = st.number_input("Potência Atuador (kW)", value=250.0)
-        dr = st.number_input("Derate (%)", value=5.0)
-        acf = st.number_input("Air Cooler (%)", value=25.0)
-        actuator = Actuator(pw, dr, acf)
-
-        mk = st.number_input("Potência Motor (kW)", value=300.0)
+        mk = st.number_input('Potência Motor (kW)', 300.0)
         motor = Motor(mk)
 
-        # Diagrama
-        st.markdown("---")
-        st.subheader("Diagrama do Equipamento")
-        fig = generate_diagram(frame, throws, actuator, motor)
+        st.subheader('Diagrama')
+        fig = generate_equipment_diagram(frame, throws, actuator, motor)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Salvar e calcular
-        if st.button("Salvar Configuração e Calcular"):
+    # Report tab
+    with tabs[2]:
+        st.header('Performance Report')
+        if st.button('Salvar e Gerar Report'):
+            out = perform_performance_calculation(mf, pin, tin, pout, throws, actuator)
             db = SessionLocal()
-            fm = FrameModel(rpm=frame.rpm, stroke_m=frame.stroke, n_throws=frame.n_throws)
-            db.add(fm); db.commit(); db.refresh(fm)
-            for t in throws:
-                tm = ThrowModel(
-                    frame_id=fm.id, throw_number=t.throw_number,
-                    bore_m=t.bore, clearance_m=t.clearance,
-                    VVCP=t.VVCP, SACE=t.SACE, SAHE=t.SAHE
+            run = PerformanceRun(
+                mass_flow=mf,
+                inlet_pressure=pin.to(ureg.Pa).magnitude,
+                inlet_temp=tin.to(ureg.K).magnitude,
+                outlet_pressure=pout.to(ureg.Pa).magnitude,
+                total_kW=out['total_kW'],
+                total_BHP=out['total_BHP'],
+                n_stages=out['n_stages']
+            )
+            db.add(run); db.commit(); db.refresh(run)
+            for d in out['details']:
+                sd = StageDetailModel(
+                    run_id=run.id,
+                    stage=d['stage'],
+                    P_in_bar=d['P_in_bar'],
+                    P_out_bar=d['P_out_bar'],
+                    isentropic_efficiency=d['isentropic_efficiency'],
+                    shaft_power_kW=d['shaft_power_kW'],
+                    shaft_power_BHP=d['shaft_power_BHP']
                 )
-                db.add(tm)
-            am = ActuatorModel(power_available_kW=pw, derate_percent=dr, air_cooler_fraction=acf)
-            db.add(am)
+                db.add(sd)
             db.commit(); db.close()
 
-            out = perform_performance_calculation(
-                mass_flow=12.0,
-                inlet_pressure=Q_(6000000, ureg.Pa),
-                inlet_temperature=Q_(298.15, ureg.K),
-                n_stages=ns,
-                PR_total=2.5,
-                throws=throws,
-                stage_mapping=stage_map,
-                actuator=actuator
-            )
-            out["frame_rpm"] = rpm
-            st.success("Configuração salva e outputs calculados")
-            st.json(out)
+            df = pd.DataFrame(out['details'])
+            st.subheader('Estágios')
+            st.dataframe(df)
+            st.markdown(f"**Total kW:** {out['total_kW']:.1f}  **Total BHP:** {out['total_BHP']:.1f}")
 
-if __name__ == "__main__":
+    # Multi-Run tab
+    with tabs[3]:
+        st.header('Multi-Run')
+        cA, cB = st.columns(2)
+        pmin = cA.number_input('P_out min (bar)', 4.0)
+        pmax = cA.number_input('P_out max (bar)', 10.0)
+        dp   = cA.number_input('ΔP step (bar)', 1.0)
+        rpm_min = cB.number_input('RPM min', 600)
+        rpm_max = cB.number_input('RPM max', 1200)
+        drpm    = cB.number_input('ΔRPM', 200)
+
+        if st.button('Executar Multi-Run'):
+            rows = []
+            for P in np.arange(pmin, pmax+1e-6, dp):
+                pout_loop = Q_(P*1e5, ureg.Pa)
+                for r in np.arange(rpm_min, rpm_max+1, drpm):
+                    frame.rpm = r
+                    out = perform_performance_calculation(mf, pin, tin, pout_loop, throws, actuator)
+                    rows.append({'P_out': P, 'RPM': r, 'flow': mf, 'BHP': out['total_BHP']})
+            dfm = pd.DataFrame(rows)
+            fig1 = px.line(dfm, x='P_out', y='flow', color='RPM', markers=True,
+                           title='Fluxo vs P_out')
+            fig2 = px.line(dfm, x='P_out', y='BHP', color='RPM', markers=True,
+                           title='BHP vs P_out')
+            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True)
+
+if __name__ == '__main__':
     main()
