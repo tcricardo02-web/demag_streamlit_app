@@ -93,16 +93,10 @@ class MotorCurve:
             return self.power_kW[0]
         if rpm >= max(self.rpm_points):
             return self.power_kW[-1]
-        
-        # Find the index where rpm would be inserted to maintain order
         idx = np.searchsorted(self.rpm_points, rpm)
-        
-        # Linear interpolation
         x0, x1 = self.rpm_points[idx-1], self.rpm_points[idx]
         y0, y1 = self.power_kW[idx-1], self.power_kW[idx]
-        
         return y0 + (rpm - x0) * (y1 - y0) / (x1 - x0)
-
 
 # ----------------------------------------------------------
 # Calculation functions
@@ -200,81 +194,28 @@ def main():
     # — Equipamento Tab —
     with tabs[1]:
         st.header("Configuração do Compressor")
-
-        n_stages = st.number_input(
-            "Número de Estágios",
-            value=3,
-            min_value=1,
-            step=1,
-            format="%d"
-        )
-        rpm = st.number_input(
-            "Frame RPM",
-            value=900,
-            min_value=100,
-            step=10,
-            format="%d"
-        )
-        stroke = st.number_input(
-            "Stroke (m)",
-            value=0.12,
-            format="%.3f"
-        )
-        n_throws = st.number_input(
-            "Número de Throws",
-            value=3,
-            min_value=1,
-            step=1,
-            format="%d"
-        )
+        n_stages = st.number_input("Número de Estágios", value=3, min_value=1, step=1)
+        rpm      = st.number_input("Frame RPM", value=900, min_value=100, step=10)
+        stroke   = st.number_input("Stroke (m)", value=0.12, format="%.3f")
+        n_throws = st.number_input("Número de Throws", value=3, min_value=1, step=1)
 
         throws: List[Throw] = []
         for i in range(1, n_throws + 1):
             st.markdown(f"🔩 Throw {i}")
-            sa = st.selectbox(
-                f"Estágio p/Throw {i}",
-                options=list(range(1, n_stages + 1)),
-                key=f"stage_{i}"
-            )
-            vvcp = st.slider(
-                f"VVCP % #{i}",
-                min_value=0.0,
-                max_value=100.0,
-                value=90.0,
-                key=f"vvcp_{i}"
-            )
-            clr = st.slider(
-                f"Clearance % #{i}",
-                min_value=0.0,
-                max_value=100.0,
-                value=2.0,
-                key=f"clr_{i}"
-            )
+            sa   = st.selectbox(f"Estágio p/Throw {i}", options=list(range(1, n_stages + 1)), key=f"stage_{i}")
+            vvcp = st.slider(f"VVCP % #{i}", 0.0, 100.0, 90.0, key=f"vvcp_{i}")
+            clr  = st.slider(f"Clearance % #{i}", 0.0, 100.0, 2.0, key=f"clr_{i}")
             throws.append(Throw(i, sa, vvcp, clr))
 
-        pw_avail = st.number_input(
-            "Potência Atuador (kW)",
-            value=250.0,
-            format="%.1f"
-        )
-        derate = st.number_input(
-            "Derate (%)",
-            value=5.0,
-            format="%.1f"
-        )
-        ac_frac = st.number_input(
-            "Air-Cooler (%)",
-            value=25.0,
-            format="%.1f"
-        )
+        pw_avail = st.number_input("Potência Atuador (kW)", value=250.0, format="%.1f")
+        derate   = st.number_input("Derate (%)", value=5.0, format="%.1f")
+        ac_frac  = st.number_input("Air-Cooler (%)", value=25.0, format="%.1f")
         actuator = Actuator(pw_avail, derate, ac_frac)
 
         st.markdown("---")
         st.subheader("Motor & Curva de Potência")
-        motor_type = st.radio(
-            "Tipo de Motor",
-            options=["Elétrico", "Gás Natural"]
-        )
+        motor_type = st.radio("Tipo de Motor", options=["Elétrico", "Gás Natural"])
+
         df_curve = pd.DataFrame(st.session_state.motor_curve_pts)
         edited   = st.data_editor(df_curve, num_rows="dynamic")
         st.session_state.motor_curve_pts = {
@@ -303,26 +244,10 @@ def main():
         st.header("Processo & Diagrama P–T")
         c1, c2 = st.columns(2)
 
-        pin_psig  = c1.number_input(
-            "P sucção (psig)",
-            value=30.0,
-            format="%.1f"
-        )
-        tin_F     = c1.number_input(
-            "T sucção (°F)",
-            value=77.0,
-            format="%.1f"
-        )
-        pout_psig = c2.number_input(
-            "P descarga (psig)",
-            value=60.0,
-            format="%.1f"
-        )
-        mf        = c2.number_input(
-            "Fluxo (kg/s)",
-            value=12.0,
-            format="%.2f"
-        )
+        pin_psig  = c1.number_input("P sucção (psig)", value=30.0, format="%.1f")
+        tin_F     = c1.number_input("T sucção (°F)", value=77.0, format="%.1f")
+        pout_psig = c2.number_input("P descarga (psig)", value=60.0, format="%.1f")
+        mf        = c2.number_input("Fluxo (kg/s)",     value=12.0, format="%.2f")
 
         st.session_state.process = {
             "P_in":  Q_(pin_psig * 6894.76, ureg.Pa),
@@ -335,14 +260,8 @@ def main():
             cfg = st.session_state.eq_config
             pr  = st.session_state.process
             out = perform_performance_calculation(
-                pr["mf"],
-                pr["P_in"],
-                pr["T_in"],
-                pr["P_out"],
-                cfg["throws"],
-                cfg["actuator"],
-                cfg["motor_curve"],
-                cfg["n_stages"]
+                pr["mf"], pr["P_in"], pr["T_in"], pr["P_out"],
+                cfg["throws"], cfg["actuator"], cfg["motor_curve"], cfg["n_stages"]
             )
 
             fig = go.Figure()
@@ -376,39 +295,12 @@ def main():
         pr  = st.session_state.get("process", {})
 
         cA, cB = st.columns(2)
-        omin = cA.number_input(
-            "P_out min (psig)",
-            value=40.0,
-            format="%.1f"
-        )
-        omax = cA.number_input(
-            "P_out max (psig)",
-            value=100.0,
-            format="%.1f"
-        )
-        dP   = cA.number_input(
-            "ΔP step",
-            value=5.0,
-            format="%.1f"
-        )
-        rmin = cB.number_input(
-            "RPM min",
-            value=600,
-            step=10,
-            format="%d"
-        )
-        rmax = cB.number_input(
-            "RPM max",
-            value=1200,
-            step=10,
-            format="%d"
-        )
-        dr   = cB.number_input(
-            "ΔRPM",
-            value=100,
-            step=10,
-            format="%d"
-        )
+        omin = cA.number_input("P_out min (psig)", value=40.0, format="%.1f")
+        omax = cA.number_input("P_out max (psig)", value=100.0, format="%.1f")
+        dP   = cA.number_input("ΔP step", value=5.0, format="%.1f")
+        rmin = cB.number_input("RPM min", value=600, step=10, format="%d")
+        rmax = cB.number_input("RPM max", value=1200, step=10, format="%d")
+        dr   = cB.number_input("ΔRPM",     value=100, step=10, format="%d")
 
         if st.button("Executar Multi-Run"):
             rows = []
@@ -417,14 +309,8 @@ def main():
                 for R in np.arange(rmin, rmax + dr/2, dr):
                     cfg["motor_curve"].current_rpm = R
                     out = perform_performance_calculation(
-                        pr["mf"],
-                        pr["P_in"],
-                        pr["T_in"],
-                        pout_loop,
-                        cfg["throws"],
-                        cfg["actuator"],
-                        cfg["motor_curve"],
-                        cfg["n_stages"]
+                        pr["mf"], pr["P_in"], pr["T_in"], pout_loop,
+                        cfg["throws"], cfg["actuator"], cfg["motor_curve"], cfg["n_stages"]
                     )
                     rows.append({
                         "P_out_psig":    P,
