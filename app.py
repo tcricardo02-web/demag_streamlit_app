@@ -23,7 +23,7 @@ ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
 
 # ----------------------------------------------------------
-# Database setup (unchanged)
+# Database setup
 # ----------------------------------------------------------
 Base = declarative_base()
 engine = create_engine('sqlite:///compressor.db', connect_args={'check_same_thread': False})
@@ -237,7 +237,7 @@ def main():
 
     # — Processo Tab ------------------------------------------
     with tabs[0]:
-        st.header('Processo & Diagrama P–T')
+        st.header('Processo & Diagrama')
         col1, col2 = st.columns(2)
 
         pin_psig  = col1.number_input(
