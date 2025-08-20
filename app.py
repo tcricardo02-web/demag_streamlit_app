@@ -168,15 +168,22 @@ def main():
 
         n_stages = st.number_input(
             'Número de Estágios',
-            value=3, min_value=1, step=1, format="%d"
+            value=3,
+            min_value=1, 
+            step=1, 
+            format="%d"
         )
         rpm = st.number_input(
             'Frame RPM',
-            value=900, min_value=100, step=10, format="%d"
+            value=900,
+            min_value=100, 
+            step=10, 
+            format="%d"
         )
         stroke = st.number_input(
             'Stroke (m)',
-            value=0.12, format="%.3f"
+            value=0.12, 
+            format="%.3f"
         )
         n_throws = st.number_input(
             'Número de Throws',
