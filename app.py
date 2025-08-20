@@ -180,7 +180,10 @@ def main():
         )
         n_throws = st.number_input(
             'Número de Throws',
-            value=3, min_value=1, step=1, format="%d"
+            value=3, 
+            min_value=1, 
+            step=1, 
+            format="%d"
         )
 
         throws: List[Throw] = []
