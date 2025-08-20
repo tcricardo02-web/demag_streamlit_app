@@ -167,52 +167,87 @@ def perform_performance_calculation(
 # Diagrama interativo (Plotly)
 # ------------------------------------------------------------------------------
 def generate_diagram(frame: Frame, throws: List[Throw], actuator: Actuator, motor: Motor) -> go.Figure:
+    """
+    Monta um diagrama representando:
+      - Motor (à esquerda), com potência em BHP;
+      - Frame do compressor (centro);
+      - Throws abaixo do frame;
+      - Atuador à direita.
+    """
     fig = go.Figure()
-    w, h = 900, 350
+    canvas_w, canvas_h = 900, 350
 
     # Motor (esquerda)
-    mx, my, mw, mh = 30, h/2-25, 100, 50
-    fig.add_shape("rect", x0=mx, y0=my, x1=mx+mw, y1=my+mh,
-                  line=dict(color="MediumPurple"), fillcolor="Lavender")
-    fig.add_annotation(x=mx+mw/2, y=my+mh/2,
-                       text=f"Motor<br>{motor.power_kW*1.34102:.0f} BHP",
-                       showarrow=False, align="center")
+    mx, my, mw, mh = 30, canvas_h/2 - 25, 100, 50
+    fig.add_shape(
+        type="rect",
+        x0=mx, y0=my, x1=mx+mw, y1=my+mh,
+        line=dict(color="MediumPurple"),
+        fillcolor="Lavender"
+    )
+    fig.add_annotation(
+        x=mx+mw/2, y=my+mh/2,
+        text=f"Motor<br>{motor.power_kW * 1.34102:.0f} BHP",
+        showarrow=False, align="center"
+    )
 
     # Frame (centro)
-    fx, fy, fw, fh = mx+mw+50, h/2-25, 200, 50
-    fig.add_shape("rect", x0=fx, y0=fy, x1=fx+fw, y1=fy+fh,
-                  line=dict(color="RoyalBlue"), fillcolor="LightSkyBlue")
-    fig.add_annotation(x=fx+fw/2, y=fy+fh/2,
-                       text=f"Frame<br>RPM: {frame.rpm:.0f}",
-                       showarrow=False, align="center")
+    fx, fy, fw, fh = mx + mw + 50, canvas_h/2 - 25, 200, 50
+    fig.add_shape(
+        type="rect",
+        x0=fx, y0=fy, x1=fx+fw, y1=fy+fh,
+        line=dict(color="RoyalBlue"),
+        fillcolor="LightSkyBlue"
+    )
+    fig.add_annotation(
+        x=fx+fw/2, y=fy+fh/2,
+        text=f"Frame<br>RPM: {frame.rpm:.0f}",
+        showarrow=False, align="center"
+    )
 
     # Throws (abaixo do frame)
     n = len(throws)
-    spacing = fw / n if n>0 else 0
+    spacing = fw / n if n > 0 else 0
     for t in throws:
         idx = t.throw_number - 1
-        tx = fx + idx*spacing + spacing/4
+        tx = fx + idx * spacing + spacing/4
         ty = fy + fh + 20
         tw, th = spacing/2, 30
-        fig.add_shape("rect", x0=tx, y0=ty, x1=tx+tw, y1=ty+th,
-                      line=dict(color="DarkOrange"), fillcolor="Moccasin")
-        fig.add_annotation(x=tx+tw/2, y=ty+th/2,
-                           text=f"Throw {t.throw_number}",
-                           showarrow=False, font=dict(size=10))
+        fig.add_shape(
+            type="rect",
+            x0=tx, y0=ty, x1=tx+tw, y1=ty+th,
+            line=dict(color="DarkOrange"),
+            fillcolor="Moccasin"
+        )
+        fig.add_annotation(
+            x=tx+tw/2, y=ty+th/2,
+            text=f"Throw {t.throw_number}",
+            showarrow=False, font=dict(size=10)
+        )
 
     # Atuador (direita)
-    ax, ay, aw, ah = fx+fw+50, h/2-20, 120, 60
-    fig.add_shape("rect", x0=ax, y0=ay, x1=ax+aw, y1=ay+ah,
-                  line=dict(color="SaddleBrown"), fillcolor="PeachPuff")
-    fig.add_annotation(x=ax+aw/2, y=ay+ah/2,
-                       text=f"Acionador<br>{actuator.power_kW:.0f} kW",
-                       showarrow=False, align="center")
+    ax, ay, aw, ah = fx + fw + 50, canvas_h/2 - 20, 120, 60
+    fig.add_shape(
+        type="rect",
+        x0=ax, y0=ay, x1=ax+aw, y1=ay+ah,
+        line=dict(color="SaddleBrown"),
+        fillcolor="PeachPuff"
+    )
+    fig.add_annotation(
+        x=ax+aw/2, y=ay+ah/2,
+        text=f"Acionador<br>{actuator.power_kW:.0f} kW",
+        showarrow=False, align="center"
+    )
 
-    fig.update_layout(width=w, height=h,
-                      margin=dict(l=20,r=20,t=20,b=20),
-                      xaxis=dict(visible=False),
-                      yaxis=dict(visible=False))
+    fig.update_layout(
+        width=canvas_w,
+        height=canvas_h,
+        margin=dict(l=20, r=20, t=20, b=20),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+    )
     return fig
+
 
 # ------------------------------------------------------------------------------
 # UI com Streamlit
