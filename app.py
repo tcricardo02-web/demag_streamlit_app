@@ -85,10 +85,7 @@ class MotorCurve:
     power_kW:   List[float]
 
     def available_power(self, rpm: float) -> float:
-        """
-        Linear interpolation using NumPy without SciPy
-        Handles extrapolation for RPMs outside the original range
-        """
+        """ NumPy‐only linear interp + extrapolation """
         if rpm <= min(self.rpm_points):
             return self.power_kW[0]
         if rpm >= max(self.rpm_points):
@@ -114,40 +111,35 @@ def perform_performance_calculation(
     motor_curve: MotorCurve,
     n_stages: int
 ):
-    # 1) Motor available power (derated)
+    # 1) Motor available (derated)
     avail_kw = motor_curve.available_power(motor_curve.current_rpm)
     avail_kw *= (1 - actuator.derate_percent / 100)
 
-    # 2) Thermodynamic compression + interstage cooling
+    # 2) Stagewise compression + cooling
     P = P_in.to(ureg.Pa).magnitude
     T = T_in.to(ureg.K).magnitude
     gamma, cp = 1.30, 2.0
-
     PR_total = P_out.to(ureg.Pa).magnitude / P
-    PR_base  = PR_total ** (1 / n_stages)
+    PR_base  = PR_total**(1/n_stages)
 
     total_kW = 0.0
     details  = []
 
-    for stage in range(1, n_stages + 1):
-        Pin_s  = P * (PR_base ** (stage - 1))
+    for stage in range(1, n_stages+1):
+        Pin_s  = P * (PR_base**(stage-1))
         Pout_s = Pin_s * PR_base
 
-        assigned = [t for t in throws if t.stage_assignment == stage]
+        assigned = [t for t in throws if t.stage_assignment==stage]
         vvcp = np.mean([t.VVCP_pct for t in assigned]) if assigned else 0.0
         clr  = np.mean([t.clearance_pct for t in assigned]) if assigned else 0.0
 
         eta = clamp(
-            0.65
-            + 0.15 * (vvcp / 100)
-            - 0.05 * (vvcp / 100)
-            + 0.10 * (clr / 100),
-            0.65,
-            0.92
+            0.65 + 0.15*(vvcp/100) - 0.05*(vvcp/100) + 0.10*(clr/100),
+            0.65, 0.92
         )
 
-        T_is = T * (PR_base ** ((gamma - 1) / gamma))
-        Tout = T + (T_is - T) / eta
+        T_is = T*(PR_base**((gamma-1)/gamma))
+        Tout = T + (T_is - T)/eta
         dT   = Tout - T
 
         Wk = mass_flow * cp * dT / 1000
@@ -155,23 +147,22 @@ def perform_performance_calculation(
 
         details.append({
             "stage":                 stage,
-            "P_in_bar":              Pin_s / 1e5,
-            "T_in_C":                T - 273.15,
-            "P_out_bar":             Pout_s / 1e5,
-            "T_out_C":               Tout - 273.15,
+            "P_in_bar":              Pin_s/1e5,
+            "T_in_C":                T-273.15,
+            "P_out_bar":             Pout_s/1e5,
+            "T_out_C":               Tout-273.15,
             "isentropic_efficiency": eta,
             "shaft_power_kW":        Wk
         })
 
-        # Interstage cooler: 1% ΔP loss, reset T to 120 °F
+        # interstage cooler: 1% ΔP loss, reset T to 120 °F
         P    = Pout_s * 0.99
-        Tout = (120 - 32) * 5 / 9 + 273.15
+        Tout = (120-32)*5/9 + 273.15
         T    = Tout
 
-    total_BHP = total_kW * 1.34102
     return {
-        "total_kW": total_kW,
-        "total_BHP": total_BHP,
+        "total_kW":  total_kW,
+        "total_BHP": total_kW * 1.34102,
         "details":   details
     }
 
@@ -182,77 +173,69 @@ def main():
     st.set_page_config(page_title="Ariel7 Compressor", layout="wide")
     init_db()
 
-    # Persist motor-curve in session
+    # Motor‐curve state
     if "motor_curve_pts" not in st.session_state:
-        st.session_state.motor_curve_pts = {
-            "rpm": [900, 1200],
-            "kW":  [200, 300]
-        }
+        st.session_state.motor_curve_pts = {"rpm":[900,1200], "kW":[200,300]}
 
-    tabs = st.tabs(["Processo", "Equipamento", "Report", "Multi-Run"])
+    tabs = st.tabs(["Processo","Equipamento","Report","Multi-Run"])
 
-    # — Equipamento Tab —
+    # — Equipamento —
     with tabs[1]:
         st.header("Configuração do Compressor")
         n_stages = st.number_input("Número de Estágios", value=3, min_value=1, step=1)
-        rpm      = st.number_input("Frame RPM", value=900, min_value=100, step=10)
-        stroke   = st.number_input("Stroke (m)", value=0.12, format="%.3f")
-        n_throws = st.number_input("Número de Throws", value=3, min_value=1, step=1)
+        rpm      = st.number_input("Frame RPM",          value=900, min_value=100, step=10)
+        stroke   = st.number_input("Stroke (m)",         value=0.12, format="%.3f")
+        n_throws = st.number_input("Número de Throws",    value=3, min_value=1, step=1)
 
         throws: List[Throw] = []
-        for i in range(1, n_throws + 1):
+        for i in range(1, n_throws+1):
             st.markdown(f"🔩 Throw {i}")
-            sa   = st.selectbox(f"Estágio p/Throw {i}", options=list(range(1, n_stages + 1)), key=f"stage_{i}")
-            vvcp = st.slider(f"VVCP % #{i}", 0.0, 100.0, 90.0, key=f"vvcp_{i}")
-            clr  = st.slider(f"Clearance % #{i}", 0.0, 100.0, 2.0, key=f"clr_{i}")
-            throws.append(Throw(i, sa, vvcp, clr))
+            sa   = st.selectbox(f"Estágio p/Throw {i}", list(range(1,n_stages+1)), key=f"stage_{i}")
+            vvcp = st.slider(f"VVCP % #{i}", 0.0,100.0,90.0, key=f"vvcp_{i}")
+            clr  = st.slider(f"Clearance % #{i}",0.0,100.0,2.0,  key=f"clr_{i}")
+            throws.append(Throw(i,sa,vvcp,clr))
 
-        pw_avail = st.number_input("Potência Atuador (kW)", value=250.0, format="%.1f")
-        derate   = st.number_input("Derate (%)", value=5.0, format="%.1f")
-        ac_frac  = st.number_input("Air-Cooler (%)", value=25.0, format="%.1f")
-        actuator = Actuator(pw_avail, derate, ac_frac)
+        actuator = Actuator(
+            st.number_input("Potência Atuador (kW)", value=250.0),
+            st.number_input("Derate (%)",             value=5.0),
+            st.number_input("Air-Cooler (%)",         value=25.0)
+        )
 
         st.markdown("---")
         st.subheader("Motor & Curva de Potência")
-        motor_type = st.radio("Tipo de Motor", options=["Elétrico", "Gás Natural"])
+        _ = st.radio("Tipo de Motor", ["Elétrico","Gás Natural"])
 
-        df_curve = pd.DataFrame(st.session_state.motor_curve_pts)
-        edited   = st.data_editor(df_curve, num_rows="dynamic")
-        st.session_state.motor_curve_pts = {
-            "rpm": edited["rpm"].tolist(),
-            "kW":  edited["kW"].tolist()
-        }
+        dfc   = pd.DataFrame(st.session_state.motor_curve_pts)
+        ed    = st.data_editor(dfc, num_rows="dynamic")
+        st.session_state.motor_curve_pts = {"rpm":ed["rpm"].tolist(), "kW":ed["kW"].tolist()}
 
-        motor_curve = MotorCurve(
+        mc = MotorCurve(
             rpm_points=st.session_state.motor_curve_pts["rpm"],
             power_kW=  st.session_state.motor_curve_pts["kW"]
         )
-        motor_curve.current_rpm = rpm
+        mc.current_rpm = rpm
 
         st.session_state.eq_config = {
             "n_stages":    n_stages,
-            "rpm":         rpm,
-            "stroke":      stroke,
             "throws":      throws,
             "actuator":    actuator,
-            "motor_curve": motor_curve
+            "motor_curve": mc
         }
         st.success("Configuração salva.")
 
-    # — Processo Tab —
+    # — Processo —
     with tabs[0]:
         st.header("Processo & Diagrama P–T")
-        c1, c2 = st.columns(2)
-
-        pin_psig  = c1.number_input("P sucção (psig)", value=30.0, format="%.1f")
-        tin_F     = c1.number_input("T sucção (°F)", value=77.0, format="%.1f")
-        pout_psig = c2.number_input("P descarga (psig)", value=60.0, format="%.1f")
-        mf        = c2.number_input("Fluxo (kg/s)",     value=12.0, format="%.2f")
+        c1,c2 = st.columns(2)
+        pin  = c1.number_input("P sucção (psig)", 30.0)
+        tin  = c1.number_input("T sucção (°F)",  77.0)
+        pout = c2.number_input("P descarga (psig)",60.0)
+        mf   = c2.number_input("Fluxo (kg/s)",      12.0)
 
         st.session_state.process = {
-            "P_in":  Q_(pin_psig * 6894.76, ureg.Pa),
-            "T_in":  Q_((tin_F - 32) * 5/9 + 273.15, ureg.K),
-            "P_out": Q_(pout_psig * 6894.76, ureg.Pa),
+            "P_in":  Q_(pin*6894.76, ureg.Pa),
+            "T_in":  Q_((tin-32)*5/9+273.15, ureg.K),
+            "P_out": Q_(pout*6894.76, ureg.Pa),
             "mf":     mf
         }
 
@@ -268,84 +251,55 @@ def main():
             for d in out["details"]:
                 fig.add_trace(go.Scatter(
                     x=[d["P_in_bar"], d["P_out_bar"]],
-                    y=[d["T_in_C"],   d["T_out_C"]],
+                    y=[d["T_in_C"], d["T_out_C"]],
                     mode="lines+markers",
                     name=f"Stage {d['stage']}"
                 ))
-                # interstage cooler
+                # cooler dash
                 fig.add_trace(go.Scatter(
-                    x=[d["P_out_bar"], d["P_out_bar"] * 0.99],
-                    y=[d["T_out_C"],   120.0],
+                    x=[d["P_out_bar"], d["P_out_bar"]*0.99],
+                    y=[d["T_out_C"], 120.0],
                     mode="lines",
-                    line=dict(dash="dash"),
-                    showlegend=False
+                    line=dict(dash="dash"), showlegend=False
                 ))
 
-            fig.update_layout(
-                title="Process P–T Diagram",
-                xaxis_title="Pressure (bar)",
-                yaxis_title="Temperature (°C)"
-            )
+            fig.update_layout(xaxis_title="Pressure (bar)", yaxis_title="Temperature (°C)")
             st.plotly_chart(fig, use_container_width=True)
 
-    # — Multi-Run Tab —
+    # — Multi-Run —
     with tabs[3]:
         st.header("Multi-Run Sweep")
         cfg = st.session_state.get("eq_config", {})
         pr  = st.session_state.get("process", {})
 
-        cA, cB = st.columns(2)
-        omin = cA.number_input("P_out min (psig)", value=40.0, format="%.1f")
-        omax = cA.number_input("P_out max (psig)", value=100.0, format="%.1f")
-        dP   = cA.number_input("ΔP step", value=5.0, format="%.1f")
-        rmin = cB.number_input("RPM min", value=600, step=10, format="%d")
-        rmax = cB.number_input("RPM max", value=1200, step=10, format="%d")
-        dr   = cB.number_input("ΔRPM",     value=100, step=10, format="%d")
+        cA,cB = st.columns(2)
+        omin = cA.number_input("P_out min (psig)", 40.0)
+        omax = cA.number_input("P_out max (psig)",100.0)
+        dP   = cA.number_input("ΔP step",           5.0)
+        rmin = cB.number_input("RPM min",         600, step=10)
+        rmax = cB.number_input("RPM max",        1200, step=10)
+        dr   = cB.number_input("ΔRPM",            100, step=10)
 
         if st.button("Executar Multi-Run"):
             rows = []
-            for P in np.arange(omin, omax + dP/2, dP):
-                pout_loop = Q_(P * 6894.76, ureg.Pa)
-                for R in np.arange(rmin, rmax + dr/2, dr):
+            for P in np.arange(omin, omax+dP/2, dP):
+                pout_loop = Q_(P*6894.76, ureg.Pa)
+                for R in np.arange(rmin, rmax+dr/2, dr):
                     cfg["motor_curve"].current_rpm = R
                     out = perform_performance_calculation(
                         pr["mf"], pr["P_in"], pr["T_in"], pout_loop,
                         cfg["throws"], cfg["actuator"], cfg["motor_curve"], cfg["n_stages"]
                     )
-                    rows.append({
-                        "P_out_psig":    P,
-                        "RPM":           R,
-                        "Flow (kg/s)":   pr["mf"],
-                        "BHP":           out["total_BHP"]
-                    })
+                    rows.append({"P_out_psig": P, "RPM": R, "Flow (kg/s)": pr["mf"], "BHP": out["total_BHP"]})
 
             dfm = pd.DataFrame(rows)
-            fig1 = px.line(
-                dfm,
-                x="P_out_psig",
-                y="Flow (kg/s)",
-                color="RPM",
-                markers=True,
-                title="Flow vs P_out"
-            )
-            fig2 = px.line(
-                dfm,
-                x="P_out_psig",
-                y="BHP",
-                color="RPM",
-                markers=True,
-                title="BHP vs P_out"
-            )
-            st.plotly_chart(fig1, use_container_width=True)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(px.line(dfm, x="P_out_psig", y="Flow (kg/s)", color="RPM", markers=True), use_container_width=True)
+            st.plotly_chart(px.line(dfm, x="P_out_psig", y="BHP",           color="RPM", markers=True), use_container_width=True)
 
-    # — Report Tab (placeholder) —
+    # — Report —
     with tabs[2]:
         st.header("Report")
-        st.markdown(
-            "Use the Processo or Multi-Run tabs to generate data, "
-            "then implement saving to CSV/DB here as needed."
-        )
+        st.markdown("Genere no Processo/Multi-Run e então salve em CSV/DB aqui.")
 
 if __name__ == "__main__":
     main()
