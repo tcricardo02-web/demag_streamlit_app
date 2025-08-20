@@ -1,14 +1,13 @@
 import streamlit as st
 import logging
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 import pint
 from datetime import datetime
-
 from sqlalchemy import (
     create_engine, Column, Integer, Float, ForeignKey, DateTime
 )
@@ -29,7 +28,6 @@ Base = declarative_base()
 engine = create_engine('sqlite:///compressor.db', connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)
 
-# Models
 class FrameModel(Base):
     __tablename__ = 'frame'
     id = Column(Integer, primary_key=True)
@@ -231,13 +229,18 @@ def main():
     st.set_page_config(page_title='Compressor Ariel7', layout='wide')
     init_db()
 
+    # Iniciar default state
     if 'unit' not in st.session_state:
         st.session_state['unit'] = 'SI'
-    st.sidebar.selectbox('Unidades', ['SI', 'Metric'], key='unit')
+    if 'process' not in st.session_state:
+        st.session_state['process'] = {}
+    if 'equipment' not in st.session_state:
+        st.session_state['equipment'] = {}
 
+    st.sidebar.selectbox('Unidades', ['SI', 'Metric'], key='unit')
     tabs = st.tabs(['Processo', 'Equipamento', 'Report', 'Multi-Run'])
 
-    # Processo tab
+    # — Processo —
     with tabs[0]:
         st.header('Processo')
         c1, c2 = st.columns(2)
@@ -249,14 +252,21 @@ def main():
             tin = Q_(c1.number_input('T sucção (°C)', 25.0)+273.15, ureg.K)
 
         pout = Q_(c2.number_input('P descarga (bar)', 4.0)*1e5, ureg.Pa)
-        mf = c2.number_input('Fluxo (kg/s)', 12.0)
-        PRtot = (pout/pin).magnitude
-        nest = estimate_n_stages(PRtot)
-        st.markdown(f'PR_total: {PRtot:.2f} (estágios: {nest})')
-        est = perform_performance_calculation(mf, pin, tin, pout, [], Actuator(0,0,0))
-        st.markdown(f"Estimativa kW: {est['total_kW']:.1f}, BHP: {est['total_BHP']:.1f}")
+        mf   = c2.number_input('Fluxo (kg/s)', 12.0)
 
-    # Equipamento tab
+        # Gravar no session_state
+        st.session_state.process = {
+            'pin': pin, 'tin': tin,
+            'pout': pout, 'mf': mf
+        }
+
+        PRtot = (pout/pin).magnitude
+        nest  = estimate_n_stages(PRtot)
+        st.markdown(f'PR_total: {PRtot:.2f}  |  Estágios ≈ {nest}')
+        est = perform_performance_calculation(mf, pin, tin, pout, [], Actuator(0,0,0))
+        st.markdown(f"Estimativa kW: {est['total_kW']:.1f}  |  BHP: {est['total_BHP']:.1f}")
+
+    # — Equipamento —
     with tabs[1]:
         st.header('Configuração do Equipamento')
         rpm = st.number_input('RPM Frame', 900)
@@ -266,21 +276,24 @@ def main():
         )
         stroke_m = stroke * (0.001 if st.session_state.unit=='Metric' else 1)
         n_thr = st.number_input('Número de Throws', 3, min_value=1)
-        frame = Frame(rpm, stroke_m, n_thr)
 
         throws: List[Throw] = []
         for i in range(1, n_thr+1):
             st.markdown(f'**Throw {i}**')
-            bore = st.number_input(f'Bore ({"mm" if st.session_state.unit=="Metric" else "m"})', 
-                                   80 if st.session_state.unit=='Metric' else 0.08, key=f'b{i}')
+            bore = st.number_input(
+                f' Bore ({"mm" if st.session_state.unit=="Metric" else "m"})', 
+                80 if st.session_state.unit=='Metric' else 0.08, key=f'b{i}'
+            )
             bore_m = bore * (0.001 if st.session_state.unit=='Metric' else 1)
-            clr = st.number_input(f'Clearance ({"mm" if st.session_state.unit=="Metric" else "m"})', 
-                                  2 if st.session_state.unit=='Metric' else 0.002, key=f'c{i}')
+            clr = st.number_input(
+                f' Clearance ({"mm" if st.session_state.unit=="Metric" else "m"})', 
+                2 if st.session_state.unit=='Metric' else 0.002, key=f'c{i}'
+            )
             clr_m = clr * (0.001 if st.session_state.unit=='Metric' else 1)
             stg = st.number_input(f'Estágio p/ Throw {i}', 1, min_value=1, key=f'st{i}')
-            vvcp = st.number_input(f'VVCP #{i}', 90, key=f'v{i}')
-            sace = st.number_input(f'SACE #{i}', 80, key=f's{i}')
-            sahe = st.number_input(f'SAHE #{i}', 60, key=f'h{i}')
+            vvcp = st.number_input(f' VVCP #{i}', 90, key=f'v{i}')
+            sace = st.number_input(f' SACE #{i}', 80, key=f's{i}')
+            sahe = st.number_input(f' SAHE #{i}', 60, key=f'h{i}')
             throws.append(Throw(i, stg, bore_m, clr_m, vvcp, sace, sahe))
 
         pw = st.number_input('Potência Atuador (kW)', 250.0)
@@ -291,21 +304,40 @@ def main():
         mk = st.number_input('Potência Motor (kW)', 300.0)
         motor = Motor(mk)
 
+        # Gravar equipamentos
+        st.session_state.equipment = {
+            'frame': Frame(rpm, stroke_m, n_thr),
+            'throws': throws,
+            'actuator': actuator,
+            'motor': motor
+        }
+
         st.subheader('Diagrama')
-        fig = generate_equipment_diagram(frame, throws, actuator, motor)
+        fig = generate_equipment_diagram(
+            st.session_state.equipment['frame'],
+            st.session_state.equipment['throws'],
+            st.session_state.equipment['actuator'],
+            st.session_state.equipment['motor']
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Report tab
+    # — Report —
     with tabs[2]:
         st.header('Performance Report')
         if st.button('Salvar e Gerar Report'):
-            out = perform_performance_calculation(mf, pin, tin, pout, throws, actuator)
+            p = st.session_state['process']
+            e = st.session_state['equipment']
+            out = perform_performance_calculation(
+                p['mf'], p['pin'], p['tin'], p['pout'],
+                e['throws'], e['actuator']
+            )
+            # salva no banco
             db = SessionLocal()
             run = PerformanceRun(
-                mass_flow=mf,
-                inlet_pressure=pin.to(ureg.Pa).magnitude,
-                inlet_temp=tin.to(ureg.K).magnitude,
-                outlet_pressure=pout.to(ureg.Pa).magnitude,
+                mass_flow=p['mf'],
+                inlet_pressure=p['pin'].to(ureg.Pa).magnitude,
+                inlet_temp=p['tin'].to(ureg.K).magnitude,
+                outlet_pressure=p['pout'].to(ureg.Pa).magnitude,
                 total_kW=out['total_kW'],
                 total_BHP=out['total_BHP'],
                 n_stages=out['n_stages']
@@ -324,30 +356,34 @@ def main():
                 db.add(sd)
             db.commit(); db.close()
 
-            df = pd.DataFrame(out['details'])
             st.subheader('Estágios')
+            df = pd.DataFrame(out['details'])
             st.dataframe(df)
-            st.markdown(f"**Total kW:** {out['total_kW']:.1f}  **Total BHP:** {out['total_BHP']:.1f}")
+            st.markdown(f"**Total kW:** {out['total_kW']:.1f}  |  **Total BHP:** {out['total_BHP']:.1f}")
 
-    # Multi-Run tab
+    # — Multi-Run —
     with tabs[3]:
         st.header('Multi-Run')
         cA, cB = st.columns(2)
-        pmin = cA.number_input('P_out min (bar)', 4.0)
-        pmax = cA.number_input('P_out max (bar)', 10.0)
-        dp   = cA.number_input('ΔP step (bar)', 1.0)
-        rpm_min = cB.number_input('RPM min', 600)
-        rpm_max = cB.number_input('RPM max', 1200)
-        drpm    = cB.number_input('ΔRPM', 200)
-
+        pmin   = cA.number_input('P_out min (bar)',  4.0)
+        pmax   = cA.number_input('P_out max (bar)', 10.0)
+        dp     = cA.number_input('ΔP step (bar)',    1.0)
+        rpm_min= cB.number_input('RPM min',          600)
+        rpm_max= cB.number_input('RPM max',         1200)
+        drpm   = cB.number_input('ΔRPM',            200)
         if st.button('Executar Multi-Run'):
+            p = st.session_state['process']
+            e = st.session_state['equipment']
             rows = []
             for P in np.arange(pmin, pmax+1e-6, dp):
                 pout_loop = Q_(P*1e5, ureg.Pa)
                 for r in np.arange(rpm_min, rpm_max+1, drpm):
-                    frame.rpm = r
-                    out = perform_performance_calculation(mf, pin, tin, pout_loop, throws, actuator)
-                    rows.append({'P_out': P, 'RPM': r, 'flow': mf, 'BHP': out['total_BHP']})
+                    e['frame'].rpm = r
+                    out = perform_performance_calculation(
+                        p['mf'], p['pin'], p['tin'], pout_loop,
+                        e['throws'], e['actuator']
+                    )
+                    rows.append({'P_out': P, 'RPM': r, 'flow': p['mf'], 'BHP': out['total_BHP']})
             dfm = pd.DataFrame(rows)
             fig1 = px.line(dfm, x='P_out', y='flow', color='RPM', markers=True,
                            title='Fluxo vs P_out')
