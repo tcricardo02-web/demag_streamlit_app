@@ -1,4 +1,4 @@
-import streamlit as st 
+import streamlit as st
 import logging
 from dataclasses import dataclass
 from typing import List
@@ -249,21 +249,21 @@ def main():
         c1, c2 = st.columns(2)
         if st.session_state.unit == 'Metric':
             # Input in kgf/cm² and °C; convert pressure to Pa and temperature to K
-            pin_input = c1.number_input('P sucção (kgf/cm²)', 2.0)
-            tin_input = c1.number_input('T sucção (°C)', 25.0)
+            pin_input = c1.number_input('P sucção (kgf/cm²)', value=2.0)
+            tin_input = c1.number_input('T sucção (°C)', value=25.0)
             pin = Q_(pin_input * 98066.5, ureg.Pa)  # conversion: 1 kgf/cm² = 98066.5 Pa
             tin = Q_(tin_input + 273.15, ureg.K)
-            pout_input = c2.number_input('P descarga (kgf/cm²)', 4.0)
+            pout_input = c2.number_input('P descarga (kgf/cm²)', value=4.0)
             pout = Q_(pout_input * 98066.5, ureg.Pa)
         else:
-            # "SI" interpreted as Imperial for this app: input in psig and °F; convert pressure to Pa and temperature to K
-            pin_input = c1.number_input('P sucção (psig)', 30.0)
-            tin_input = c1.number_input('T sucção (°F)', 77.0)
+            # "SI" interpreted as Imperial in this app: input in psig and °F; convert pressure to Pa and temperature to K
+            pin_input = c1.number_input('P sucção (psig)', value=30.0)
+            tin_input = c1.number_input('T sucção (°F)', value=77.0)
             pin = Q_(pin_input * 6894.76, ureg.Pa)  # 1 psig = 6894.76 Pa
             tin = Q_((tin_input - 32) * 5/9 + 273.15, ureg.K)
-            pout_input = c2.number_input('P descarga (psig)', 60.0)
+            pout_input = c2.number_input('P descarga (psig)', value=60.0)
             pout = Q_(pout_input * 6894.76, ureg.Pa)
-        mf = c2.number_input('Fluxo (kg/s)', 12.0)
+        mf = c2.number_input('Fluxo (kg/s)', value=12.0)
 
         # Save to process session_state
         st.session_state.process = {
@@ -283,38 +283,38 @@ def main():
     # — Equipamento —
     with tabs[1]:
         st.header('Configuração do Equipamento')
-        rpm = st.number_input('RPM Frame', 900)
+        rpm = st.number_input('RPM Frame', value=900, step=1, format="%d")
         stroke = st.number_input('Stroke (mm)' if st.session_state.unit == 'Metric' else 'Stroke (m)',
-                                 120 if st.session_state.unit == 'Metric' else 0.12)
+                                 value=(120 if st.session_state.unit == 'Metric' else 0.12))
         # Convert stroke: mm to m if metric
         stroke_m = stroke * (0.001 if st.session_state.unit == 'Metric' else 1)
-        n_thr = st.number_input('Número de Throws', 3, min_value=1)
+        n_thr = st.number_input('Número de Throws', value=3, min_value=1, step=1, format="%d")
 
         throws: List[Throw] = []
         for i in range(1, n_thr + 1):
             st.markdown(f'**Throw {i}**')
             bore = st.number_input(
                 f'Bore ({"mm" if st.session_state.unit == "Metric" else "m"})', 
-                80 if st.session_state.unit == 'Metric' else 0.08, key=f'b{i}'
+                value=(80 if st.session_state.unit == 'Metric' else 0.08), key=f'b{i}'
             )
             bore_m = bore * (0.001 if st.session_state.unit == 'Metric' else 1)
             clr = st.number_input(
                 f'Clearance ({"mm" if st.session_state.unit == "Metric" else "m"})', 
-                2 if st.session_state.unit == 'Metric' else 0.002, key=f'c{i}'
+                value=(2 if st.session_state.unit == 'Metric' else 0.002), key=f'c{i}'
             )
             clr_m = clr * (0.001 if st.session_state.unit == 'Metric' else 1)
-            stg = st.number_input(f'Estágio p/ Throw {i}', 1, min_value=1, key=f'st{i}')
-            vvcp = st.number_input(f'VVCP #{i}', 90, key=f'v{i}')
-            sace = st.number_input(f'SACE #{i}', 80, key=f's{i}')
-            sahe = st.number_input(f'SAHE #{i}', 60, key=f'h{i}')
+            stg = st.number_input(f'Estágio p/ Throw {i}', value=1, min_value=1, step=1, format="%d", key=f'st{i}')
+            vvcp = st.number_input(f'VVCP #{i}', value=90, key=f'v{i}')
+            sace = st.number_input(f'SACE #{i}', value=80, key=f's{i}')
+            sahe = st.number_input(f'SAHE #{i}', value=60, key=f'h{i}')
             throws.append(Throw(i, stg, bore_m, clr_m, vvcp, sace, sahe))
 
-        pw = st.number_input('Potência Atuador (kW)', 250.0)
-        dr = st.number_input('Derate (%)', 5.0)
-        ac = st.number_input('Air Cooler (%)', 25.0)
+        pw = st.number_input('Potência Atuador (kW)', value=250.0)
+        dr = st.number_input('Derate (%)', value=5.0)
+        ac = st.number_input('Air Cooler (%)', value=25.0)
         actuator = Actuator(pw, dr, ac)
 
-        mk = st.number_input('Potência Motor (kW)', 300.0)
+        mk = st.number_input('Potência Motor (kW)', value=300.0)
         motor = Motor(mk)
 
         # Save equipment configuration
@@ -406,12 +406,12 @@ def main():
     with tabs[3]:
         st.header('Multi-Run')
         cA, cB = st.columns(2)
-        pmin = cA.number_input('P_out min (' + ('kgf/cm²' if st.session_state.unit == 'Metric' else 'psig') + ')', 4.0)
-        pmax = cA.number_input('P_out max (' + ('kgf/cm²' if st.session_state.unit == 'Metric' else 'psig') + ')', 10.0)
-        dp = cA.number_input('ΔP step (' + ('kgf/cm²' if st.session_state.unit == 'Metric' else 'psig') + ')', 1.0)
-        rpm_min = cB.number_input('RPM min', 600)
-        rpm_max = cB.number_input('RPM max', 1200)
-        drpm = cB.number_input('ΔRPM', 200)
+        pmin = cA.number_input('P_out min (' + ('kgf/cm²' if st.session_state.unit == 'Metric' else 'psig') + ')', value=4.0)
+        pmax = cA.number_input('P_out max (' + ('kgf/cm²' if st.session_state.unit == 'Metric' else 'psig') + ')', value=10.0)
+        dp = cA.number_input('ΔP step (' + ('kgf/cm²' if st.session_state.unit == 'Metric' else 'psig') + ')', value=1.0)
+        rpm_min = cB.number_input('RPM min', value=600, step=1, format="%d")
+        rpm_max = cB.number_input('RPM max', value=1200, step=1, format="%d")
+        drpm = cB.number_input('ΔRPM', value=200, step=1, format="%d")
         if st.button('Executar Multi-Run'):
             p = st.session_state['process']
             e = st.session_state['equipment']
